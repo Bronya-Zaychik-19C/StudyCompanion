@@ -1,0 +1,55 @@
+{
+  "project": {
+    "name": "StudyCompanion",
+    "version": "3.0.0",
+    "description": "考研AI学习私教"
+  },
+
+  "character": {
+    "name": "小助",
+    "personality": "温柔、专业、鼓励型学习伙伴"
+  },
+
+  "ai": {
+    "provider": "deepseek",
+    "deepseek": {
+      "api_key": "REPLACED-ROTATE-ME",
+      "base_url": "https://api.deepseek.com/v1/chat/completions",
+      "model": "deepseek-chat"
+    },
+    "qwen": {
+      "api_key": "",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "model": "qwen-plus"
+    },
+    "openai": {
+      "api_key": "",
+      "base_url": "https://api.openai.com/v1/chat/completions",
+      "model": "gpt-4o"
+    }
+  },
+
+  "features": {
+    "voice_interaction": false,
+    "schedule_management": true,
+    "study_tracking": true,
+    "feynman_learning": true
+  },
+
+  "server": {
+    "host": "0.0.0.0",
+    "port": 48911,
+    "websocket_path": "/ws",
+    "enable_cors": true
+  },
+
+  "database": {
+    "path": "data/sqlite/study_companion.db"
+  },
+
+  "logging": {
+    "level": "INFO",
+    "file": "logs/study_companion.log",
+    "console": true
+  }
+}
