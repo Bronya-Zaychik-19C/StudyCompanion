@@ -4,10 +4,13 @@ StudyCompanion - 考研 AI 学习私教 v3.5
 多会话持久化 | 数学一 | 英语一 | 408
 """
 
-import asyncio, json, logging, uuid
+import asyncio, json, logging, os, uuid
+from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from uvicorn import Config, Server
+
+load_dotenv()
 
 from core.memory.database import DatabaseManager
 from core.ai.qwen_client import QwenChatClient
@@ -39,23 +42,24 @@ class StudyCompanionApp:
         await self.db.init_database()
 
         ai_cfg = self.config.get('ai', {})
-        provider = ai_cfg.get('provider', 'deepseek')
+        provider = os.getenv('AI_PROVIDER', ai_cfg.get('provider', 'deepseek'))
         prov = ai_cfg.get(provider, {})
-        api_key = prov.get('api_key', '')
-        if api_key and not api_key.startswith('sk-你的'):
-            self.ai = QwenChatClient(api_key=api_key, model=prov.get('model', 'deepseek-chat'),
-                                      base_url=prov.get('base_url', 'https://api.deepseek.com/v1/chat/completions'))
-            logger.info(f"✅ AI: {provider}/{prov.get('model')}")
+        api_key = os.getenv(f'{provider.upper()}_API_KEY', prov.get('api_key', ''))
+        base_url = os.getenv(f'{provider.upper()}_BASE_URL', prov.get('base_url', 'https://api.deepseek.com/v1/chat/completions'))
+        model = os.getenv(f'{provider.upper()}_MODEL', prov.get('model', 'deepseek-chat'))
+        if api_key and not api_key.startswith('sk-your'):
+            self.ai = QwenChatClient(api_key=api_key, model=model, base_url=base_url)
+            logger.info(f"✅ AI: {provider}/{model}")
         else:
-            logger.warning("⚠️ 未配置 API Key")
+            logger.warning("⚠️ 未配置 API Key，请在 .env 文件中设置")
 
         self.kb = KnowledgeBase()
         self.kb.load_subject('math_one.json')
+        self.qbank = QuestionBank(knowledge_base=self.kb)
         self.feynman = FeynmanEngine(ai_client=self.ai, knowledge_base=self.kb, question_bank=self.qbank)
         self.diagnosis = DiagnosisEngine(ai_client=self.ai, knowledge_base=self.kb)
         self.exam = ExamEngine(ai_client=self.ai, knowledge_base=self.kb)
         self.roadmap = RoadmapEngine(ai_client=self.ai, knowledge_base=self.kb)
-        self.qbank = QuestionBank(knowledge_base=self.kb)
         logger.info("✅ 全部引擎就绪")
 
     # ==================== HTTP API ====================
@@ -67,7 +71,7 @@ class StudyCompanionApp:
 
         @self.app.get("/api/health")
         async def health():
-            return {"status": "ok", "version": "3.5.0", "ai": self.ai is not None}
+            return {"status": "ok", "version": "3.6.0", "ai": self.ai is not None}
 
         @self.app.get("/api/sessions")
         async def list_sessions():
@@ -293,7 +297,9 @@ class StudyCompanionApp:
         s['diag_sid'] = diag_sid
         q = await self.diagnosis.start_diagnosis(diag_sid, subject, chapter_index=chapter - 1 if chapter else None)
         if q.get('done'): await self._send_report(s, q.get('summary'))
-        else: await ws.send_json({**q, 'type': 'question'})
+        else:
+            q.pop('answer', None); q.pop('explanation', None)
+            await ws.send_json({**q, 'type': 'question'})
 
     async def _handle_diagnosis_answer(self, wsid, answer):
         s = self.ws_sessions[wsid]; ws = s['ws']
@@ -309,6 +315,7 @@ class StudyCompanionApp:
                     for w in summary['weak_points']:
                         self.roadmap.add_weak(wsid, w.get('id', ''))
         else:
+            q.pop('answer', None); q.pop('explanation', None)
             await ws.send_json({**q, 'type': 'question'})
 
     async def _send_report(self, s, summary):
@@ -507,7 +514,6 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8"><title>StudyCompanion - 考研AI私教</title>
 <script>window.MathJax={tex:{inlineMath:[["$","$"]],displayMath:[["$$","$$"]]},svg:{fontCache:"global"}};</script>
 <script src="https://unpkg.com/mathjax@3/es5/tex-svg.js"></script>
-<script src="https://cdn.bootcdn.net/ajax/libs/mathjax/3.2.2/es5/tex-svg.js"></script>
 <script>
 function renderMath(el) {
     if (!el) return;
@@ -575,7 +581,7 @@ button{padding:8px 16px;border:none;border-radius:16px;cursor:pointer;font-size:
 </head>
 <body>
 <div class="sidebar">
-    <div class="sidebar-header"><h2>🎓 StudyCompanion</h2><div class="subtitle">考研AI私教 v3.5</div></div>
+    <div class="sidebar-header"><h2>🎓 StudyCompanion</h2><div class="subtitle">考研AI私教 v3.6</div></div>
     <div class="sidebar-actions"><button class="btn-new" onclick="newSession()">+ 新对话</button></div>
     <div class="conv-list" id="convList"></div>
     <div class="sidebar-footer">
@@ -590,11 +596,11 @@ button{padding:8px 16px;border:none;border-radius:16px;cursor:pointer;font-size:
 <div class="main">
     <div class="header"><h1 id="pageTitle">📐 数学一</h1></div>
     <div class="tabs">
-        <div class="tab active" onclick="switchTab('feynman')">🧠 费曼</div>
-        <div class="tab" onclick="switchTab('diagnosis')">🔍 诊断</div>
-        <div class="tab" onclick="switchTab('paper')">📋 真题</div>
-        <div class="tab" onclick="switchTab('exam')">📝 模拟</div>
-        <div class="tab" onclick="switchTab('roadmap')">🗺️ 路径</div>
+        <div class="tab active" onclick="switchTab('feynman',event)">🧠 费曼</div>
+        <div class="tab" onclick="switchTab('diagnosis',event)">🔍 诊断</div>
+        <div class="tab" onclick="switchTab('paper',event)">📋 真题</div>
+        <div class="tab" onclick="switchTab('exam',event)">📝 模拟</div>
+        <div class="tab" onclick="switchTab('roadmap',event)">🗺️ 路径</div>
     </div>
     <div class="mode-bar" id="modeBar">选择左侧章节或输入知识点开始学习</div>
     <div class="chat-area" id="chatBox"></div>
@@ -611,12 +617,12 @@ var chapters=[{idx:1,n:'函数与极限'},{idx:2,n:'导数与微分'},{idx:3,n:'
 
 function renderChapters(){var h='<div class="ch-label">数学一 章节</div>';chapters.forEach(function(c){h+='<div class="chapter-item'+(currentChapter===c.idx?' active':'')+'" onclick="selCh('+c.idx+')">Ch.'+c.idx+' '+c.n+'</div>'});document.getElementById('chapterSidebar').innerHTML=h}
 function selCh(i){currentChapter=i;renderChapters()}
-function switchTab(t){currentTab=t;feynmanActive=false;document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active')});event.target.classList.add('active');document.getElementById('actionButtons').innerHTML='';var m={paper:getYearOptions(),diagnosis:'<button class="btn-secondary" onclick="startDiag()">🔍 诊断测试</button> <button class="btn-secondary" onclick="startDiagCh()">按章节诊断</button>',exam:'<button class="btn-secondary" onclick="genExam()">📝 模拟卷</button> <button class="btn-secondary" onclick="hotspots()">🎯 考点预测</button>',roadmap:'<button class="btn-secondary" onclick="getPlan(30)">🗓️ 30天</button> <button class="btn-secondary" onclick="getPlan(60)">🗓️ 60天</button> <button class="btn-secondary" onclick="getRecs()">📋 推荐路径</button>'};document.getElementById('actionButtons').innerHTML=m[t]||''}
+function switchTab(t,e){currentTab=t;feynmanActive=false;document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active')});e.target.classList.add('active');document.getElementById('actionButtons').innerHTML='';var m={paper:getYearOptions(),diagnosis:'<button class="btn-secondary" onclick="startDiag()">🔍 诊断测试</button> <button class="btn-secondary" onclick="startDiagCh()">按章节诊断</button>',exam:'<button class="btn-secondary" onclick="genExam()">📝 模拟卷</button> <button class="btn-secondary" onclick="hotspots()">🎯 考点预测</button>',roadmap:'<button class="btn-secondary" onclick="getPlan(30)">🗓️ 30天</button> <button class="btn-secondary" onclick="getPlan(60)">🗓️ 60天</button> <button class="btn-secondary" onclick="getRecs()">📋 推荐路径</button>'};document.getElementById('actionButtons').innerHTML=m[t]||''}
 function setPersona(p){ws.send(JSON.stringify({type:'persona_set',persona:p}))}
 function openMenu(){document.getElementById('actionButtons').innerHTML='<button class="btn-secondary" onclick="startDiag()">诊断</button> <button class="btn-secondary" onclick="genExam()">模拟卷</button> <button class="btn-secondary" onclick="hotspots()">考点预测</button> <button class="btn-secondary" onclick="getRecs()">推荐路径</button> <button class="btn-secondary" onclick="exitFeynman()">退出费曼</button>'}
 
 function connect(){
-    ws=new WebSocket('ws://'+location.host+'/ws');
+    ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
     ws.onopen=function(){document.getElementById('connDot').className='conn-dot ok';document.getElementById('connText').innerText='已连接';loadSessions()}
     ws.onclose=function(){document.getElementById('connDot').className='conn-dot warn';document.getElementById('connText').innerText='未连接';setTimeout(connect,3000)}
     ws.onmessage=function(e){
@@ -636,9 +642,9 @@ function connect(){
         else{addMsg(d.role||'assistant',d.content)}
     }
 }
-function addMsg(role,content){var b=document.getElementById('chatBox');var d=document.createElement('div');d.className='msg '+role;d.innerHTML=content.replace(/\n/g,'<br>');b.appendChild(d);b.scrollTop=b.scrollHeight;renderMath(d)}
+function addMsg(role,content){var b=document.getElementById('chatBox');var d=document.createElement('div');d.className='msg '+role;d.textContent=content;d.innerHTML=d.innerHTML.replace(/\n/g,'<br>');b.appendChild(d);b.scrollTop=b.scrollHeight;renderMath(d)}
 function startStream(role){var b=document.getElementById('chatBox');streamDiv=document.createElement('div');streamDiv.className='msg '+role;streamContent='';b.appendChild(streamDiv);b.scrollTop=b.scrollHeight}
-function appendStream(c){if(!streamDiv)return;streamContent+=c;streamDiv.innerHTML=streamContent.replace(/\n/g,'<br>');document.getElementById('chatBox').scrollTop=document.getElementById('chatBox').scrollHeight}
+function appendStream(c){if(!streamDiv)return;streamContent+=c;streamDiv.textContent=streamContent;streamDiv.innerHTML=streamDiv.innerHTML.replace(/\n/g,'<br>');document.getElementById('chatBox').scrollTop=document.getElementById('chatBox').scrollHeight}
 function endStream(){if(!streamDiv)return;renderMath(streamDiv);streamDiv=null;streamContent=''}
 
 async function loadSessions(){var r=await fetch('/api/sessions');var data=await r.json();var h='';data.forEach(function(s){h+='<div class="conv-item'+(s.id===currentSession?' active':'')+'" onclick="loadSession(\''+s.id+'\')"><span class="title">'+escHtml(s.title)+'</span><button class="del-btn" onclick="event.stopPropagation();delSession(\''+s.id+'\')">✕</button></div>'});document.getElementById('convList').innerHTML=h||'<div style="color:rgba(255,255,255,0.3);font-size:.8em;text-align:center;padding:20px">暂无对话</div>'}
@@ -655,11 +661,11 @@ function updateBar(){document.getElementById('modeBar').innerHTML=feynmanActive?
 function renderQ(d){var b=document.getElementById('chatBox');var div=document.createElement('div');div.className='msg question';div.id='q-'+d.topic_id;var h='<div class="q-title">📝 '+d.question+'</div>';if(d.options&&d.options.length){h+='<div class="options">';d.options.forEach(function(o,i){h+='<div class="opt" onclick="ansQ(\''+d.topic_id+'\',\''+String.fromCharCode(65+i)+'\',this)">'+o+'</div>'});h+='</div>'}h+='<div style="margin-top:6px"><input id="ans-'+d.topic_id+'" placeholder="输入答案" style="padding:6px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:white;width:60%;font-size:.85em"> <button class="btn-primary" style="font-size:.78em" onclick="submitAns(\''+d.topic_id+'\')">提交</button></div>';div.innerHTML=h;b.appendChild(div);b.scrollTop=b.scrollHeight;renderMath(div)}
 function ansQ(tid,ans,el){document.querySelectorAll('#q-'+tid+' .opt').forEach(function(o){o.classList.remove('chosen')});el.classList.add('chosen');ws.send(JSON.stringify({type:'diagnosis_answer',answer:ans}))}
 function submitAns(tid){var a=document.getElementById('ans-'+tid).value.trim();if(a)ws.send(JSON.stringify({type:'diagnosis_answer',answer:a}))}
-function renderReport(d){var div=document.createElement('div');div.className='msg assistant';var h='<b>诊断报告</b><br>正确率：'+d.accuracy+'% ('+d.correct+'/'+d.total+')<br>';if(d.weak_points&&d.weak_points.length){h+='薄弱点：<br>';d.weak_points.forEach(function(w){h+='• '+w.name+'<br>'})}if(d.ai_summary)h+='<br>'+d.ai_summary;div.innerHTML=h;var bb=document.getElementById('chatBox');bb.appendChild(div);renderMath(div)}
+function renderReport(d){var div=document.createElement('div');div.className='msg assistant';var h='<b>诊断报告</b><br>正确率：'+d.accuracy+'% ('+d.correct+'/'+d.total+')<br>';if(d.weak_points&&d.weak_points.length){h+='薄弱点：<br>';d.weak_points.forEach(function(w){h+='• '+escHtml(w.name)+'<br>'})}if(d.ai_summary)h+='<br>'+escHtml(d.ai_summary);div.innerHTML=h;var bb=document.getElementById('chatBox');bb.appendChild(div);renderMath(div)}
 function renderExam(d){d.questions.forEach(function(q,i){var div=document.createElement('div');div.className='msg question';div.id='eq-'+i;var h='<div class="q-title">第'+(i+1)+'题 ['+q.topic_name+']</div>'+q.question;if(q.options&&q.options.length){h+='<div class="options">';q.options.forEach(function(o,j){h+='<div class="opt" onclick="ansExam('+i+',\''+String.fromCharCode(65+j)+'\',this,\''+q.answer+'\')">'+o+'</div>'});h+='</div>'}div.innerHTML=h;var ex=document.getElementById('chatBox');ex.appendChild(div);renderMath(div)})}
 function ansExam(i,ans,el,correct){document.querySelectorAll('#eq-'+i+' .opt').forEach(function(o){o.classList.remove('chosen')});el.classList.add('chosen');el.style.background=ans===correct?'rgba(74,222,128,0.3)':'rgba(248,113,113,0.3)';addMsg('system',ans===correct?'✅ 正确':'❌ 正确答案: '+correct)}
-function renderHotspots(d){var div=document.createElement('div');div.className='msg assistant';var h='<b>考点预测</b><br><br>';d.hotspots.forEach(function(x,i){h+=(i+1)+'. '+x.name+' ['+x.chapter+'] '+x.weight+' '+'*'.repeat(x.difficulty||3)+'<br>'});if(d.ai_analysis)h+='<br>'+d.ai_analysis;div.innerHTML=h;var hs=document.getElementById('chatBox');hs.appendChild(div);renderMath(div)}
-function renderPlan(d){var div=document.createElement('div');div.className='msg assistant';var h='<b>学习计划 ('+d.available_days+'天)</b><br><br>';if(d.recommendations){d.recommendations.forEach(function(r,i){h+=(i+1)+'. '+r.name+' ['+r.chapter+'] '+(r.is_weak?'[薄弱]':'')+'<br>'})}if(d.ai_study_plan)h+='<br>'+d.ai_study_plan;div.innerHTML=h;var pp=document.getElementById('chatBox');pp.appendChild(div);renderMath(div)}
+function renderHotspots(d){var div=document.createElement('div');div.className='msg assistant';var h='<b>考点预测</b><br><br>';d.hotspots.forEach(function(x,i){h+=(i+1)+'. '+escHtml(x.name)+' ['+escHtml(x.chapter)+'] '+escHtml(x.weight)+' '+'*'.repeat(x.difficulty||3)+'<br>'});if(d.ai_analysis)h+='<br>'+escHtml(d.ai_analysis);div.innerHTML=h;var hs=document.getElementById('chatBox');hs.appendChild(div);renderMath(div)}
+function renderPlan(d){var div=document.createElement('div');div.className='msg assistant';var h='<b>学习计划 ('+d.available_days+'天)</b><br><br>';if(d.recommendations){d.recommendations.forEach(function(r,i){h+=(i+1)+'. '+escHtml(r.name)+' ['+escHtml(r.chapter)+'] '+(r.is_weak?'[薄弱]':'')+'<br>'})}if(d.ai_study_plan)h+='<br>'+escHtml(d.ai_study_plan);div.innerHTML=h;var pp=document.getElementById('chatBox');pp.appendChild(div);renderMath(div)}
 function genPaper(y){if(!y){var e=document.getElementById('yearSelect');y=e?parseInt(e.value):2024}ws.send(JSON.stringify({type:'qbank_paper',year:y}));addMsg('system','正在生成'+y+'年真题卷...')}function getYearOptions(){var h='<select id="yearSelect" style="padding:6px 10px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:white;margin-right:8px">';for(var y=2025;y>=1987;y--){h+='<option value="'+y+'"'+(y===2024?' selected':'')+'>'+y+'年</option>'}h+='</select><button class="btn-secondary" onclick="genPaper()">📋 生成真题卷</button>';return h}function startDiag(){ws.send(JSON.stringify({type:'diagnosis_start',subject:'math_one'}))}
 function startDiagCh(){if(currentChapter)ws.send(JSON.stringify({type:'diagnosis_start',subject:'math_one',chapter:currentChapter}))}
 function genExam(){ws.send(JSON.stringify({type:'exam_generate',subject:'math_one',count:5,chapter:currentChapter}))}

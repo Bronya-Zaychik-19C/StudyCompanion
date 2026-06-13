@@ -44,6 +44,8 @@ class DiagnosisEngine:
 
         # 生成第一道题
         question = await self._generate_question(session_id)
+        if question.get('answer'):
+            self.sessions[session_id]['current_answer'] = question['answer']
         return question
 
     async def _generate_question(self, session_id: str) -> Dict:

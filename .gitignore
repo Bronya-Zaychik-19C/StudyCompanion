@@ -40,6 +40,9 @@ data/knowledge_cache/
 data/models/
 *.log
 
+# Environment
+.env
+
 # Config (私密信息)
 config/user_config.json
 config/api_keys.json
